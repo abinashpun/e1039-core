@@ -42,6 +42,62 @@
 #include <utility>
 #include <vector>
 
+using namespace std;
+
+namespace 
+{
+    //static flag to indicate the initialized has been done
+    static bool inited = false;
+
+	//static flag of kmag strength
+	static double FMAGSTR;
+	static double KMAGSTR;
+
+    //Beam position and shape
+    static double X_BEAM;
+    static double Y_BEAM;
+    static double SIGX_BEAM;
+    static double SIGY_BEAM;
+
+    //Simple swimming settings 
+    static int NSTEPS_TARGET;
+    static int NSTEPS_SHIELDING;
+    static int NSTEPS_FMAG;
+
+    //Geometric constants
+    static double Z_TARGET;
+    static double Z_DUMP;
+    static double Z_UPSTREAM;
+    static double Z_DOWNSTREAM;
+
+    //initialize global variables
+    void initGlobalVariables()
+    {
+        if(!inited) 
+        {
+            inited = true;
+
+            recoConsts* rc = recoConsts::instance();
+            FMAGSTR = rc->get_DoubleFlag("FMAGSTR");
+            KMAGSTR = rc->get_DoubleFlag("KMAGSTR");
+            
+            X_BEAM = rc->get_DoubleFlag("X_BEAM");
+            Y_BEAM = rc->get_DoubleFlag("Y_BEAM");
+            SIGX_BEAM = rc->get_DoubleFlag("SIGX_BEAM");
+            SIGY_BEAM = rc->get_DoubleFlag("SIGY_BEAM");
+
+            NSTEPS_TARGET = rc->get_IntFlag("NSTEPS_TARGET");
+            NSTEPS_SHIELDING = rc->get_IntFlag("NSTEPS_SHIELDING");
+            NSTEPS_FMAG = rc->get_IntFlag("NSTEPS_FMAG");
+
+            Z_TARGET = rc->get_DoubleFlag("Z_TARGET");
+            Z_DUMP = rc->get_DoubleFlag("Z_DUMP");
+            Z_UPSTREAM = rc->get_DoubleFlag("Z_UPSTREAM");
+            Z_DOWNSTREAM = rc->get_DoubleFlag("Z_DOWNSTREAM");
+        }
+    }
+}
+
 SQGFRaveVertexing::SQGFRaveVertexing(const std::string& name):
   SubsysReco(name),
   legacyContainer(false),
@@ -84,11 +140,30 @@ int SQGFRaveVertexing::InitRun(PHCompositeNode* topNode)
 
   if(vtxSmearing) rndm.SetSeed(PHRandomSeed());
 
+
+/* //get instance of fitter
+  _fitter = PHGenFit::Fitter::getInstance(tgeo_manager,
+                                          field, "DafRef",
+                                          "RKTrackRep", false);
+  _fitter->set_verbosity(Verbosity());
+
+  if (!_fitter)
+  {
+    cerr << PHWHERE << endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+*/
   //create vertex factory 
-  //_vertex_finder = new genfit::GFRaveVertexFactory(Verbosity());
-  _vertex_finder = new genfit::GFRaveVertexFactory(1);
+  _vertex_finder = new genfit::GFRaveVertexFactory(Verbosity());
+ 
  //set the method to find vertex
   _vertex_finder->setMethod(_vertexing_method.data());
+  
+  TMatrixDSym beam_spot_cov(3);
+    beam_spot_cov(0, 0) = SIGX_BEAM*SIGX_BEAM;;      // dx * dx
+    beam_spot_cov(1, 1) = SIGY_BEAM*SIGY_BEAM;      // dy * dy
+    beam_spot_cov(2, 2) = 100.0 * 100.0;  // dz * dz
+    _vertex_finder->setBeamspot(TVector3(X_BEAM, Y_BEAM, -300.), beam_spot_cov);
   //_vertex_finder->setBeamspot();
 
   if (!_vertex_finder)
@@ -114,8 +189,17 @@ int SQGFRaveVertexing::InitField(PHCompositeNode* topNode)
   std::unique_ptr<PHFieldConfig> default_field_cfg(new PHFieldConfig_v3(rc->get_CharFlag("fMagFile"), rc->get_CharFlag("kMagFile"), rc->get_DoubleFlag("FMAGSTR"), rc->get_DoubleFlag("KMAGSTR"), 5.));
   _phfield = PHFieldUtility::GetFieldMapNode(default_field_cfg.get(), topNode, 0);
 
-   _gfield = new SQGenFit::GFField(_phfield);
+  if(Verbosity() > Fun4AllBase::VERBOSITY_A_LOT) 
+  {
+   /* std::cout << "PHField check: " << "-------" << std::endl;
+    std::ofstream field_scan("field_scan.csv");
+    _phfield->identify(field_scan);
+    field_scan.close();
+  */
+  }
 
+  //if(_fitter_type != SQGFRaveVertexing::LEGACY) 
+   _gfield = new SQGenFit::GFField(_phfield);
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
@@ -148,21 +232,27 @@ int SQGFRaveVertexing::InitGeom(PHCompositeNode* topNode)
 
 
 
+
+
 int SQGFRaveVertexing::process_event(PHCompositeNode* topNode)
 {
 
 
   std::vector<genfit::Track*> gf_tracks;
  //loop over the tracks
-   
+   int nTracks = truthTrackVec->size();
   int nRecTracks = legacyContainer ? recEvent->getNTracks() : recTrackVec->size();
-   for(int i = 0; i < RecTracks; ++i)
+   for(int i = 0; i < nTracks; ++i)
 	{
-  
+        SQTrack* trk = truthTrackVec->at(i);
+        int recTrackIdx = trk->get_rec_track_id();
+        if(recTrackIdx < 0 || recTrackIdx >= nRecTracks) continue;
+
         SRecTrack* recTrack = legacyContainer ? &(recEvent->getTrack(recTrackIdx)):dynamic_cast<SRecTrack*>(recTrackVec->at(recTrackIdx));
 
-       ///translating SRecTrack to GenFit Track
-         auto genfit_track = TranslateSRecTrackToGenFitTrack(recTrack);
+
+        auto genfit_track = TranslateSRecTrackToGenFitTrack(recTrack);
+
         if (!genfit_track)
           continue;
     
@@ -173,9 +263,6 @@ int SQGFRaveVertexing::process_event(PHCompositeNode* topNode)
   std::cout<<"GFRaveVertex: track size: "<<gf_tracks.size()<<std::endl;
 
   std::vector<genfit::GFRaveVertex*> rave_vertices;
-
-
-///Now find vertex from GFRave
   if (gf_tracks.size() >= 2)
   {
     try
@@ -190,12 +277,18 @@ int SQGFRaveVertexing::process_event(PHCompositeNode* topNode)
   }
 
    std::cout<<"GFRaveVertex: vertex size: "<<rave_vertices.size()<<std::endl;
+    for (unsigned int i=0; i<rave_vertices.size(); ++i) {
+      //new(vertexArray[i]) genfit::GFRaveVertex(*(vertices[i]));
 
-    for (unsigned int i=0; i<rave_vertices.size(); ++i) {  
       genfit::GFRaveVertex* vtx = static_cast<genfit::GFRaveVertex*>(rave_vertices[i]);
-      std::cout<<"(X, Y, Z): ("<<vtx->getPos().X()<<", "vtx->getPos().Y()<<", "<<vtx->getPos().Z() <<std::endl;
-     }
 
+      std::cout<<"(X, Y, Z): ("<<vtx->getPos().X()<<", "<<vtx->getPos().Y()<<", "<<vtx->getPos().Z()<<")"<<std::endl;
+
+      for (unsigned int j=0; j<vtx->getNTracks(); ++j) {
+        std::cout << "track parameters uniqueID: " << vtx->getParameters(j)->GetUniqueID() <<std::endl;
+        
+      }
+     }
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
@@ -333,11 +426,14 @@ genfit::Track* SQGFRaveVertexing::TranslateSRecTrackToGenFitTrack(SRecTrack* sre
    try
   {
 
-    TVector3 pos = srec_track->getVertexPos();//look at the node [0] for both pos and momentum
+    TVector3 pos = srec_track->getVertexPos();
     TVector3 mom = srec_track->getVertexMom();
-    TMatrixDSym cov(6);// = srec_track->getGFCov(0);//get it from srec_track
 
-      double uncertainty[6] = {10., 10., 10., 3., 3., 10.};
+    SQGenFit::GFTrack track(*srec_track);
+    TMatrixDSym cov(6);// = track.getGenFitTrack()->getCovSeed();// = srec_track->getGFCov(0);//get it from srec_track
+    //TVectorD st = track.getGenFitTrack()->getStateSeed();
+    
+   double uncertainty[6] = {10., 10., 10., 3., 3., 10.};
    for(int i = 0; i < 6; i++)
    {
     for(int j = 0; j < 6; j++)
@@ -345,13 +441,12 @@ genfit::Track* SQGFRaveVertexing::TranslateSRecTrackToGenFitTrack(SRecTrack* sre
        //std::cout <<"cov....."<<srec_track->getGFCov(0)[i][j] << "  ";
       cov[i][j] = uncertainty[i]*uncertainty[j];
      }
-     std::cout << std::endl;
+    // std::cout << std::endl;
    }
 
     int _pdg = srec_track->getCharge() > 0 ? -13 : 13;
     genfit::AbsTrackRep* rep = new genfit::RKTrackRep(_pdg);
     genfit::Track* genfit_track = new genfit::Track(rep, TVector3(0, 0, 0), TVector3(0, 0, 0));
-
 
     genfit::FitStatus* fs = new genfit::FitStatus();
     fs->setCharge(srec_track->get_charge());
@@ -369,7 +464,8 @@ genfit::Track* SQGFRaveVertexing::TranslateSRecTrackToGenFitTrack(SRecTrack* sre
 
     genfit::MeasuredStateOnPlane* ms = new genfit::MeasuredStateOnPlane(rep);
     ms->setPosMomCov(pos, mom, cov);
-    
+    //ms->setStateCov(st, cov);
+
     genfit::KalmanFittedStateOnPlane* kfs = new genfit::KalmanFittedStateOnPlane(*ms, 1., 1.);
   
      //< Acording to the special order of using the stored states

@@ -1,5 +1,8 @@
 #include "SQGFRaveVertexing.h"
 
+#include "KalmanFastTracking.h"
+#include "EventReducer.h"
+
 #include <phfield/PHFieldConfig_v3.h>
 #include <phfield/PHFieldUtility.h>
 #include <phgeom/PHGeomUtility.h>
@@ -15,7 +18,14 @@
 #include <interface_main/SQDimuon_v1.h>
 #include <interface_main/SQTrackVector_v1.h>
 #include <interface_main/SQDimuonVector_v1.h>
-
+#include <interface_main/SQHit.h>
+#include <interface_main/SQHit_v1.h>
+#include <interface_main/SQHitMap_v1.h>
+#include <interface_main/SQHitVector_v1.h>
+#include <interface_main/SQEvent_v1.h>
+#include <interface_main/SQRun_v1.h>
+#include <interface_main/SQSpill_v1.h>
+#include <interface_main/SQSpillMap_v1.h>
 
 #include <GenFit/FitStatus.h>                     // for FitStatus
 #include <GenFit/GFRaveTrackParameters.h>         // for GFRaveTrackParameters
@@ -27,6 +37,8 @@
 #include <GenFit/RKTrackRep.h>
 #include <GenFit/Track.h>
 #include <GenFit/TrackPoint.h>                    // for TrackPoint
+#include <GenFit/KalmanFitter.h>
+#include <GenFit/KalmanFitterRefTrack.h>
 
 #include <TMatrixDSymfwd.h>                       // for TMatrixDSym
 #include <TMatrixTSym.h>                          // for TMatrixTSym
@@ -106,7 +118,9 @@ SQGFRaveVertexing::SQGFRaveVertexing(const std::string& name):
   recTrackVec(nullptr),
   truthTrackVec(nullptr),
   truthDimuonVec(nullptr),
+  _fastfinder(nullptr),
   _vertex_finder(nullptr),
+  _kmfitter(nullptr),
   _vertexing_method("kalman-smoothing:1"),
   //_vertexing_method("avr-smoothing:1-minweight:0.5-primcut:9-seccut:9"),
   recDimuonVec(nullptr)
@@ -126,6 +140,9 @@ int SQGFRaveVertexing::Init(PHCompositeNode* topNode)
 
 int SQGFRaveVertexing::InitRun(PHCompositeNode* topNode)
 {
+  
+  _kmfitter = new genfit::KalmanFitterRefTrack();
+  
   int ret = GetNodes(topNode);
   if(ret != Fun4AllReturnCodes::EVENT_OK) return ret;
 
@@ -140,7 +157,7 @@ int SQGFRaveVertexing::InitRun(PHCompositeNode* topNode)
 
   if(vtxSmearing) rndm.SetSeed(PHRandomSeed());
 
-
+  _fastfinder = new KalmanFastTracking(_phfield, _t_geo_manager, false);
   /* //get instance of fitter
      _fitter = PHGenFit::Fitter::getInstance(tgeo_manager,
      field, "DafRef",
@@ -153,6 +170,9 @@ int SQGFRaveVertexing::InitRun(PHCompositeNode* topNode)
      return Fun4AllReturnCodes::ABORTRUN;
      }
   */
+
+  _gfitter = new SQGenFit::GFFitter();
+  _gfitter->init(_gfield, "KalmanFitterRefTrack");
   //create vertex factory 
   //_vertex_finder = new genfit::GFRaveVertexFactory(Verbosity());
   _vertex_finder = new genfit::GFRaveVertexFactory(1);
@@ -232,41 +252,78 @@ int SQGFRaveVertexing::InitGeom(PHCompositeNode* topNode)
 
 int SQGFRaveVertexing::process_event(PHCompositeNode* topNode)
 {
+
+
   std::map<int, SRecTrack*> posTracks;
   std::map<int, SRecTrack*> negTracks;
 
   std::vector<genfit::Track*> gf_tracks;
-
-  //loop over the tracks
-  int nTracks = truthTrackVec->size();
-  int nRecTracks = legacyContainer ? recEvent->getNTracks() : recTrackVec->size();
-  for(int i = 0; i < nTracks; ++i)
-    {
-      SQTrack* trk = truthTrackVec->at(i);
-      int recTrackIdx = trk->get_rec_track_id();
-      if(recTrackIdx < 0 || recTrackIdx >= nRecTracks) continue;
-
-      SRecTrack* recTrack = legacyContainer ? &(recEvent->getTrack(recTrackIdx)):dynamic_cast<SRecTrack*>(recTrackVec->at(recTrackIdx));
+  std::vector<genfit::GFRaveVertex*> rave_vertices;
+ 
 
 
-      if(recTrack->getCharge() > 0)
+   
+  int nTracklets = trackletVec->size();
+      
+  for(int i = 0; i < nTracklets; ++i)//tracklet loop or track loop starts
+    {  
+      Tracklet* tracklet = trackletVec->at(i);
+
+      SQGenFit::GFTrack track;
+         
+      track.setTracklet(*tracklet);
+            
+      try
 	{
+          
+          int fitOK = _gfitter->processTrack(track);
+
+	}
+      catch(genfit::Exception& e)
+	{
+	  std::cerr << "Track fitting failed: " << e.what() << std::endl;
+	  return -1;
+	}
+ 
+      
+
+      genfit::Track* genfit_track = track.getGenFitTrack();
+          
+
+ 
+ 
+
+      ///Translation function
+
+      //loop over the tracks
+      /*  int nTracks = truthTrackVec->size();
+	  int nRecTracks = legacyContainer ? recEvent->getNTracks() : recTrackVec->size();
+	  for(int i = 0; i < nTracks; ++i)
+	  {
+	  SQTrack* trk = truthTrackVec->at(i);
+	  int recTrackIdx = trk->get_rec_track_id();
+	  if(recTrackIdx < 0 || recTrackIdx >= nRecTracks) continue;
+
+	  SRecTrack* recTrack = legacyContainer ? &(recEvent->getTrack(recTrackIdx)):dynamic_cast<SRecTrack*>(recTrackVec->at(recTrackIdx));
+
+
+	  if(recTrack->getCharge() > 0)
+	  {
 	  posTracks[trk->get_track_id()] = recTrack;
-	}
-      else
-	{
+	  }
+	  else
+	  {
 	  negTracks[trk->get_track_id()] = recTrack;
-	}
+	  }
 
-       
-      /*       SQGenFit::GFTrack track(*recTrack);         
-	       genfit::Track* genfit_track = track.getGenFitTrack();                   
-        
+ 
+	  // SQGenFit::GFTrack track(*recTrack);
+	  // genfit::Track* genfit_track = track.getGenFitTrack();
+
+	  auto genfit_track = TranslateSRecTrackToGenFitTrack(recTrack);
+	  if (!genfit_track) continue;
+
       */
-      auto genfit_track = TranslateSRecTrackToGenFitTrack(recTrack);
-
-      if (!genfit_track) continue;
-
       if (Verbosity())
 	{
 	  TVector3 pos, mom;
@@ -278,39 +335,52 @@ int SQGFRaveVertexing::process_event(PHCompositeNode* topNode)
 	  pos.Print();
 	  mom.Print();
 	  cov.Print();
+
+	  std::cout<<"trackpoints in genfit track: "<<genfit_track->getNumPoints()<<std::endl;
 	}
-            
-      gf_tracks.push_back(const_cast<genfit::Track*>(genfit_track));
  	
-    }
+      
+      gf_tracks.push_back(const_cast<genfit::Track*>(genfit_track));
+      // gf_tracks.push_back(genfit_track);
+         
+
+    }//trackloop ends
      
   std::cout<<"GFRaveVertex: track size: "<<gf_tracks.size()<<std::endl;
 
-  std::vector<genfit::GFRaveVertex*> rave_vertices;
-  if (gf_tracks.size() >= 2)
+
+  
+  if (gf_tracks.size() > 1)
     {
       try
 	{
 	  _vertex_finder->findVertices(&rave_vertices, gf_tracks);
+    
 	}
       catch (...)
 	{
-	  //if (Verbosity() > 1)
-	  std::cout << PHWHERE << "GFRaveVertexFactory::findVertices failed!";
+	  if (Verbosity() > 1)
+	    std::cout << PHWHERE << "GFRaveVertexFactory::findVertices failed!";
 	}
 
     }
 
   TVector3 *abi_vtx = new TVector3(9999.,9999.,9999.);
   std::cout<<"GFRaveVertex: vertex size: "<<rave_vertices.size()<<std::endl;
-  for (unsigned int i=0; i<rave_vertices.size(); ++i) {
 
-    genfit::GFRaveVertex* rvtx = static_cast<genfit::GFRaveVertex*>(rave_vertices[i]);
+
+  if(rave_vertices.size()>0){
+    for (unsigned int i=0; i<rave_vertices.size(); ++i) {
     
-    std::cout<<"(X, Y, Z): ("<<rvtx->getPos().X()<<", "<<rvtx->getPos().Y()<<", "<<rvtx->getPos().Z()<<")"<<std::endl;
-    abi_vtx->SetXYZ(rvtx->getPos().X(),rvtx->getPos().Y(),rvtx->getPos().Z());
+      genfit::GFRaveVertex* rvtx = static_cast<genfit::GFRaveVertex*>(rave_vertices[i]);
+      
+      std::cout<<"(X, Y, Z): ("<<rvtx->getPos().X()<<", "<<rvtx->getPos().Y()<<", "<<rvtx->getPos().Z()<<")"<<std::endl;
+      abi_vtx->SetXYZ(rvtx->getPos().X(),rvtx->getPos().Y(),rvtx->getPos().Z());
+    
    
+    }
   }
+
 
 
   if(posTracks.empty() || negTracks.empty()) return Fun4AllReturnCodes::EVENT_OK;
@@ -342,6 +412,7 @@ int SQGFRaveVertexing::process_event(PHCompositeNode* topNode)
     }
 
 
+
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
@@ -350,8 +421,22 @@ int SQGFRaveVertexing::End(PHCompositeNode* topNode)
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
+
+//===========
 int SQGFRaveVertexing::GetNodes(PHCompositeNode* topNode)
 {
+
+  trackletVec = findNode::getClass<TrackletVector>(topNode, "TrackletVector");
+  _rawEvent = findNode::getClass<SRawEvent>(topNode, "SRawEvent");
+
+
+  _run_header = findNode::getClass<SQRun>(topNode, "SQRun");
+  _spill_map = findNode::getClass<SQSpillMap>(topNode, "SQSpillMap");
+  _event_header = findNode::getClass<SQEvent>(topNode, "SQEvent");
+  _hit_vector = findNode::getClass<SQHitVector>(topNode, "SQHitVector");
+  _triggerhit_vector = findNode::getClass<SQHitVector>(topNode, "SQTriggerHitVector"); 
+   
+  
   truthTrackVec = findNode::getClass<SQTrackVector>(topNode, "SQTruthTrackVector");
   if(!truthTrackVec)
     {
@@ -479,14 +564,17 @@ genfit::Track* SQGFRaveVertexing::TranslateSRecTrackToGenFitTrack(SRecTrack* sre
 
   try
     {
-  
-      SQGenFit::GFTrack track(*srec_track);
 
-      TMatrixDSym seed_cov = track.getGenFitTrack()->getCovSeed(); 
-      TVectorD seed_st = track.getGenFitTrack()->getStateSeed();    
+
+      SQGenFit::GFTrack track(*srec_track);
+   
+   
+      TMatrixDSym seed_cov = track.getGenFitTrack()->getCovSeed(); //get it from srec_track
+      TVectorD seed_st = track.getGenFitTrack()->getStateSeed();
+    
 
       int _pdg = srec_track->getCharge() > 0 ? -13 : 13;
-      genfit::AbsTrackRep* rep = new genfit::RKTrackRep(_pdg);
+      genfit::AbsTrackRep* rep = new genfit::RKTrackRep(_pdg);//track.getGenFitTrkRep();
 
       genfit::Track* genfit_track = new genfit::Track(rep, seed_st , seed_cov );
 
@@ -496,27 +584,33 @@ genfit::Track* SQGFRaveVertexing::TranslateSRecTrackToGenFitTrack(SRecTrack* sre
       fs->setNdf(srec_track->getNHits()-5);
       fs->setIsFitted(true);
       fs->setIsFitConvergedFully(true);
+
       genfit_track->setFitStatus(fs, rep);
 
+    
       genfit::TrackPoint* tp = new genfit::TrackPoint(genfit_track);
 
       genfit::KalmanFitterInfo* fi = new genfit::KalmanFitterInfo(tp, rep);
       tp->setFitterInfo(fi);
+
 
       int nHits = srec_track->getNHits();
       std::vector<genfit::MeasuredStateOnPlane> _fitstates;
       for(int i = 0; i < nHits; ++i){
 	genfit::SharedPlanePtr detPlane(new genfit::DetPlane(srec_track->getGFPlaneO(i), srec_track->getGFPlaneU(i), srec_track->getGFPlaneV(i)));
 	_fitstates.push_back(genfit::MeasuredStateOnPlane(srec_track->getGFState(i),srec_track->getGFCov(i),detPlane,rep,srec_track->getGFAuxInfo(i)));
-   
-      }
  
+      }
+
+   
       genfit::KalmanFittedStateOnPlane* kfs = new genfit::KalmanFittedStateOnPlane(_fitstates.front(), 1., 1.);
-      
+        
+
       //< Acording to the special order of using the stored states
       fi->setForwardUpdate(kfs);
       //fi->setBackwardUpdate(kfs);
       genfit_track->insertPoint(tp);
+    
 
       return genfit_track;
     }
@@ -529,6 +623,201 @@ genfit::Track* SQGFRaveVertexing::TranslateSRecTrackToGenFitTrack(SRecTrack* sre
 
 }
 
+
+
+/*
+  genfit::Track* SQGFRaveVertexing::TranslateSRecTrackToGenFitTrack(SRecTrack* srec_track)
+  {
+
+  try
+  {
+
+  TVector3 pos=srec_track->getPositionVecSt1();
+  std::cout<<"srec_track->getZ(0): "<<srec_track->getZ(0)<<std::endl;
+ 
+  TVector3 mom = srec_track->getMomentumVecSt1();
+
+  //SQGenFit::GFTrack track(*srec_track);
+  TMatrixDSym cov(6); //= srec_track->getGFCov(0);//track.getGenFitTrack()->getCovSeed(); //get it from srec_track
+  //TVectorD st = srec_track->getGFState(0);//track.getGenFitTrack()->getStateSeed();
+  //std::cout<<"z vertex before vertexing: "<<srec_track->getVertexPos().Z()<<std::endl;
+
+  double uncertainty[6] = {10., 10., 10., 3., 3., 10.};
+  for(int i = 0; i < 6; i++)
+  {
+  for(int j = 0; j < 6; j++)
+  { 
+  //std::cout <<"cov....."<<srec_track->getGFCov(0)[i][j] << "  ";
+  cov[i][j] = uncertainty[i]*uncertainty[j];
+  }
+  // std::cout << std::endl;
+  }
+
+  int _pdg = srec_track->getCharge() > 0 ? -13 : 13;
+  genfit::AbsTrackRep* rep = new genfit::RKTrackRep(_pdg);
+  genfit::Track* genfit_track = new genfit::Track(rep, TVector3(0, 0, 0), TVector3(0, 0, 0));
+
+  genfit::FitStatus* fs = new genfit::FitStatus();
+  fs->setCharge(srec_track->get_charge());
+  fs->setChi2(srec_track->getChisq());
+  fs->setNdf(srec_track->getNHits()-5);
+  fs->setIsFitted(true);
+  fs->setIsFitConvergedFully(true);
+
+  genfit_track->setFitStatus(fs, rep);
+
+  genfit::TrackPoint* tp = new genfit::TrackPoint(genfit_track);
+
+  genfit::KalmanFitterInfo* fi = new genfit::KalmanFitterInfo(tp, rep);
+  tp->setFitterInfo(fi);
+
+  genfit::MeasuredStateOnPlane* ms = new genfit::MeasuredStateOnPlane(rep);
+  ms->setPosMomCov(pos, mom, cov);
+  //ms->setStateCov(st, cov);
+  //ms->setAuxInfo(srec_track->getGFAuxInfo(0));
+  //const genfit::SharedPlanePtr& plane = ms->getPlane();
+  //plane->setO(srec_track->getGFPlaneO(0));
+  //plane->setU(srec_track->getGFPlaneU(0));
+  //plane->setV(srec_track->getGFPlaneV(0));
+ 
+  genfit::KalmanFittedStateOnPlane* kfs = new genfit::KalmanFittedStateOnPlane(*ms, 1., 1.);
+  
+  //< Acording to the special order of using the stored states
+  fi->setForwardUpdate(kfs);
+  //fi->setBackwardUpdate(kfs);
+  genfit_track->insertPoint(tp);
+  return genfit_track;
+  }
+  catch (...)
+  {
+  std::cout << PHWHERE <<"TranslateSRecTrackToGenFitTrack failed!";
+  }
+
+  return nullptr;
+
+  }
+
+*/
+
+int SQGFRaveVertexing::updateHitInfo(SRawEvent* sraw_event) 
+{
+  for(Hit hit : sraw_event->getAllHits()) 
+    {
+      size_t idx = _m_hitID_idx[hit.index];
+      SQHit* sq_hit = _hit_vector->at(idx);
+
+      sq_hit->set_tdc_time(hit.tdcTime);
+      sq_hit->set_drift_distance(hit.driftDistance);
+      sq_hit->set_pos(hit.pos);
+      sq_hit->set_in_time(hit.isInTime());
+      sq_hit->set_hodo_mask(hit.isHodoMask());
+      sq_hit->set_trigger_mask(hit.isTriggerMask());
+    }
+
+  return 0;
+}
+
+SRawEvent* SQGFRaveVertexing::BuildSRawEvent() 
+{
+  //Needed for E1039 since we switched to a more generic interface
+  //SRawEvent is still needed so that the code can be used for E906 as well
+  SRawEvent* sraw_event = new SRawEvent();
+  _m_hitID_idx.clear();
+  _m_trghitID_idx.clear();
+
+  int run_id   = 0;
+  int spill_id = 0;
+  int event_id = _event;
+  if(_event_header) 
+    {
+      run_id   = _event_header->get_run_id();
+      spill_id = _event_header->get_spill_id();
+      event_id = _event_header->get_event_id();
+    }
+  sraw_event->setEventInfo(run_id, spill_id, event_id);
+
+  //Trigger setting - either from trigger emulation or TS, default to 0
+  int triggers[10];
+  for(int i = SQEvent::NIM1; i <= SQEvent::MATRIX5; ++i)
+    {
+      if(_event_header)
+	triggers[i] = _event_header->get_trigger(static_cast<SQEvent::TriggerMask>(i));
+      else
+	triggers[i] = 0;
+    }
+  sraw_event->setTriggerBits(triggers);
+
+  //Get target position
+  int targetPos = 0;
+  if(_spill_map) 
+    {
+      SQSpill* spill = _spill_map->get(spill_id);
+      if(spill) 
+	{
+	  targetPos = spill->get_target_pos();
+	}
+    }
+  sraw_event->setTargetPos(1);
+
+  //Get beam information - QIE -- not implemented yet
+
+  //Get trigger hits - TriggerHit
+  if(_triggerhit_vector) 
+    {
+      for(size_t idx = 0; idx < _triggerhit_vector->size(); ++idx) 
+	{
+	  SQHit* sq_hit = _triggerhit_vector->at(idx);
+	  _m_trghitID_idx[sq_hit->get_hit_id()] = idx;
+
+	  Hit h;
+	  h.index = sq_hit->get_hit_id();
+	  h.detectorID = sq_hit->get_detector_id();
+	  h.elementID = sq_hit->get_element_id();
+	  h.tdcTime = sq_hit->get_tdc_time();
+	  h.driftDistance = fabs(sq_hit->get_drift_distance()); //MC L-R info removed here
+	  h.pos = sq_hit->get_pos();
+
+	  if(sq_hit->is_in_time()) h.setInTime();
+	  sraw_event->insertTriggerHit(h);
+	}
+    }
+
+  for(size_t idx = 0; idx < _hit_vector->size(); ++idx) 
+    {
+      SQHit* sq_hit = _hit_vector->at(idx);
+
+      Hit h;
+      h.index = sq_hit->get_hit_id();
+      h.detectorID = sq_hit->get_detector_id();
+      h.elementID = sq_hit->get_element_id();
+      h.tdcTime = sq_hit->get_tdc_time();
+      h.driftDistance = fabs(sq_hit->get_drift_distance()); //MC L-R info removed here
+      h.pos = sq_hit->get_pos();
+
+      if(sq_hit->is_in_time()) h.setInTime();
+      sraw_event->insertHit(h);
+
+      /* We should not need the following code, since all these logic are done in
+      // inside eventreducer
+      //TODO calibration
+      if(p_geomSvc->isCalibrationLoaded())
+      { 
+      if((h.detectorID >= 1 && h.detectorID <= nChamberPlanes) || (h.detectorID >= nChamberPlanes+nHodoPlanes+1))
+      {
+      h.setInTime(p_geomSvc->isInTime(h.detectorID, h.tdcTime));
+      if(h.isInTime()) h.driftDistance = p_geomSvc->getDriftDistance(h.detectorID, h.tdcTime);
+      }
+      }
+      // FIXME just for the meeting, figure this out fast!
+      if(!_triggerhit_vector and h.detectorID >= 31 and h.detectorID <= 46) {
+      sraw_event->insertTriggerHit(h);
+      }
+      */
+    }
+
+  sraw_event->reIndex(true);
+  return sraw_event;
+}
 
 
 

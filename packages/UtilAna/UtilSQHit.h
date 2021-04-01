@@ -2,12 +2,15 @@
 #define _UTIL_SQHIT__H_
 class SQHitVector;
 
+/// A set of utility functions about SQHit.
 namespace UtilSQHit {
-  SQHitVector* FindHits(const SQHitVector* vec_in, const std::string det_name);
-  SQHitVector* FindHits(const SQHitVector* vec_in, const int         det_id  );
+  /// Extract a set of hits that are of the given detector (det_name).
+  SQHitVector* FindHits(const SQHitVector* vec_in, const std::string det_name, const bool in_time=false);
+  SQHitVector* FindHits(const SQHitVector* vec_in, const int         det_id  , const bool in_time=false);
 
-  SQHitVector* FindFirstHits(const SQHitVector* vec_in, const std::string det_name);
-  SQHitVector* FindFirstHits(const SQHitVector* vec_in, const int         det_id  );
+  /// Extract a set of first hits that are of the given detector (det_name), where "first" means the earliest (i.e. largest TDC time) hit per element.
+  SQHitVector* FindFirstHits(const SQHitVector* vec_in, const std::string det_name, const bool in_time=false);
+  SQHitVector* FindFirstHits(const SQHitVector* vec_in, const int         det_id  , const bool in_time=false);
 };
 
 #endif /* _UTIL_SQHIT__H_ */
